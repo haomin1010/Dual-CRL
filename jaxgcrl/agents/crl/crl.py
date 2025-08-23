@@ -21,7 +21,7 @@ from jaxgcrl.envs.wrappers import TrajectoryIdWrapper
 from jaxgcrl.utils.evaluator import ActorEvaluator
 from jaxgcrl.utils.replay_buffer import TrajectoryUniformSamplingQueue
 
-from .losses import update_actor_and_alpha, update_critic
+from .losses import update_actor_and_alpha, update_critic, update_critic_2
 from .networks import Actor, Encoder
 
 Metrics = types.Metrics
@@ -258,7 +258,7 @@ class CRL:
 
         # Critic
         sa_encoder = Encoder(
-            repr_dim=self.repr_dim,
+            repr_dim=self.repr_dim + 32,
             network_width=self.h_dim,
             network_depth=self.n_hidden,
             skip_connections=self.skip_connections,
@@ -266,6 +266,27 @@ class CRL:
             use_ln=self.use_ln,
         )
         sa_encoder_params = sa_encoder.init(sa_key, np.ones([1, state_size + action_size]))
+
+        s_encoder = Encoder(
+            repr_dim=self.repr_dim + 32,
+            network_width=self.h_dim,
+            network_depth=self.n_hidden,
+            skip_connections=self.skip_connections,
+            use_relu=self.use_relu,
+            use_ln=self.use_ln,
+        )
+        s_encoder_params = s_encoder.init(sa_key, np.ones([1, state_size]))
+
+        mlp_encoder = Encoder(
+            repr_dim=self.repr_dim,
+            network_width=self.h_dim,
+            network_depth=self.n_hidden,
+            skip_connections=self.skip_connections,
+            use_relu=self.use_relu,
+            use_ln=self.use_ln,
+        )
+        mlp_encoder_params = mlp_encoder.init(sa_key, np.ones([1, self.repr_dim + 32]))
+
         g_encoder = Encoder(
             repr_dim=self.repr_dim,
             network_width=self.h_dim,
@@ -277,7 +298,7 @@ class CRL:
         g_encoder_params = g_encoder.init(g_key, np.ones([1, goal_size]))
         critic_state = TrainState.create(
             apply_fn=None,
-            params={"sa_encoder": sa_encoder_params, "g_encoder": g_encoder_params},
+            params={"sa_encoder": sa_encoder_params, "g_encoder": g_encoder_params, "s_encoder": s_encoder_params, "mlp_encoder": mlp_encoder_params},
             tx=optax.adam(learning_rate=self.critic_lr),
         )
 
@@ -427,6 +448,8 @@ class CRL:
                 actor=actor,
                 sa_encoder=sa_encoder,
                 g_encoder=g_encoder,
+                s_encoder=s_encoder,
+                mlp_encoder=mlp_encoder,
             )
 
             training_state, actor_metrics = update_actor_and_alpha(
@@ -435,11 +458,16 @@ class CRL:
             training_state, critic_metrics = update_critic(
                 context, networks, transitions, training_state, critic_key
             )
+
+            training_state, critic_metrics_1 = update_critic_2(
+                context, networks, transitions, training_state, critic_key
+            )
             training_state = training_state.replace(gradient_steps=training_state.gradient_steps + 1)
 
             metrics = {}
             metrics.update(actor_metrics)
             metrics.update(critic_metrics)
+            metrics.update(critic_metrics_1)
 
             return (
                 training_state,
@@ -561,7 +589,6 @@ class CRL:
 
             epoch_training_time = time.time() - t
             training_walltime += epoch_training_time
-
             sps = (env_steps_per_actor_step * num_training_steps_per_epoch) / epoch_training_time
             metrics = {
                 "training/sps": sps,
@@ -574,7 +601,8 @@ class CRL:
             metrics = evaluator.run_evaluation(training_state, metrics)
             logging.info("step: %d", current_step)
 
-            do_render = ne % config.visualization_interval == 0
+            #do_render = ne % config.visualization_interval == 0
+            do_render = False
             make_policy = lambda param: lambda obs, rng: actor.apply(param, obs)
 
             progress_fn(

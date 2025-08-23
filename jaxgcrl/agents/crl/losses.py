@@ -48,11 +48,14 @@ def update_actor_and_alpha(config, networks, transitions, training_state, key):
         log_prob -= jnp.log((1 - jnp.square(action)) + 1e-6)
         log_prob = log_prob.sum(-1)  # dimension = B
 
-        sa_encoder_params, g_encoder_params = (
+        sa_encoder_params, g_encoder_params, mlp_encoder_params = (
             critic_params["sa_encoder"],
             critic_params["g_encoder"],
+            critic_params["mlp_encoder"],
         )
+
         sa_repr = networks["sa_encoder"].apply(sa_encoder_params, jnp.concatenate([state, action], axis=-1))
+        sa_repr = networks["mlp_encoder"].apply(mlp_encoder_params, sa_repr)
         g_repr = networks["g_encoder"].apply(g_encoder_params, goal)
 
         qf_pi = energy_fn(config["energy_fn"], sa_repr, g_repr)
@@ -92,35 +95,37 @@ def update_actor_and_alpha(config, networks, transitions, training_state, key):
 
 def update_critic(config, networks, transitions, training_state, key):
     def critic_loss(critic_params, transitions, key):
-        sa_encoder_params, g_encoder_params = (
+        sa_encoder_params, g_encoder_params, s_encoder_params, mlp_encoder_params = (
             critic_params["sa_encoder"],
             critic_params["g_encoder"],
+            critic_params["s_encoder"],
+            critic_params["mlp_encoder"],
         )
 
         state = transitions.observation[:, : config["state_size"]]
         action = transitions.action
 
+        # contrast sa and future_s
         sa_repr = networks["sa_encoder"].apply(sa_encoder_params, jnp.concatenate([state, action], axis=-1))
-        g_repr = networks["g_encoder"].apply(
-            g_encoder_params, transitions.observation[:, config["state_size"] :]
-        )
+        s_repr_1 = networks["s_encoder"].apply(s_encoder_params, transitions.extras["future_state"])
 
         # InfoNCE
-        logits = energy_fn(config["energy_fn"], sa_repr[:, None, :], g_repr[None, :, :])
-        critic_loss = contrastive_loss_fn(config["contrastive_loss_fn"], logits)
+        logits = energy_fn(config["energy_fn"], sa_repr[:, None, :], s_repr_1[None, :, :])
+        critic_loss_1 = contrastive_loss_fn(config["contrastive_loss_fn"], logits)
 
         # logsumexp regularisation
         logsumexp = jax.nn.logsumexp(logits + 1e-6, axis=1)
-        critic_loss += config["logsumexp_penalty_coeff"] * jnp.mean(logsumexp**2)
+        critic_loss_1 += config["logsumexp_penalty_coeff"] * jnp.mean(logsumexp**2)
+
 
         I = jnp.eye(logits.shape[0])
         correct = jnp.argmax(logits, axis=1) == jnp.argmax(I, axis=1)
         logits_pos = jnp.sum(logits * I) / jnp.sum(I)
         logits_neg = jnp.sum(logits * (1 - I)) / jnp.sum(1 - I)
 
-        return critic_loss, (logsumexp, I, correct, logits_pos, logits_neg)
+        return critic_loss_1 , (logsumexp, I, correct, logits_pos, logits_neg, critic_loss_1)
 
-    (loss, (logsumexp, I, correct, logits_pos, logits_neg)), grad = jax.value_and_grad(
+    (loss, (logsumexp, I, correct, logits_pos, logits_neg, critic_loss_1)), grad = jax.value_and_grad(
         critic_loss, has_aux=True
     )(training_state.critic_state.params, transitions, key)
     new_critic_state = training_state.critic_state.apply_gradients(grads=grad)
@@ -132,6 +137,57 @@ def update_critic(config, networks, transitions, training_state, key):
         "logits_neg": logits_neg,
         "logsumexp": logsumexp.mean(),
         "critic_loss": loss,
+        "critic_loss_1": critic_loss_1,
+    }
+
+    return training_state, metrics
+
+
+def update_critic_2(config, networks, transitions, training_state, key):
+    def critic_loss(critic_params, transitions, key):
+        sa_encoder_params, g_encoder_params, s_encoder_params, mlp_encoder_params = (
+            critic_params["sa_encoder"],
+            critic_params["g_encoder"],
+            critic_params["s_encoder"],
+            critic_params["mlp_encoder"],
+        )
+
+        state = transitions.observation[:, : config["state_size"]]
+        action = transitions.action
+
+
+        # contrast s and goal
+        g_repr = networks["g_encoder"].apply(
+            g_encoder_params, transitions.observation[:, config["state_size"] :]
+        )
+        s_repr_2 = networks["s_encoder"].apply(s_encoder_params, state)
+        #s_repr_2 = jax.lax.stop_gradient(s_repr_2)
+        s_repr_2_mlp = networks["mlp_encoder"].apply(mlp_encoder_params, s_repr_2)
+
+        # InfoNCE
+        logits = energy_fn(config["energy_fn"], g_repr[:, None, :], s_repr_2_mlp[None, :, :])
+        critic_loss_2 = contrastive_loss_fn(config["contrastive_loss_fn"], logits)
+
+        # logsumexp regularisation
+        logsumexp = jax.nn.logsumexp(logits + 1e-6, axis=1)
+        critic_loss_2 += config["logsumexp_penalty_coeff"] * jnp.mean(logsumexp**2)
+
+
+        I = jnp.eye(logits.shape[0])
+        correct = jnp.argmax(logits, axis=1) == jnp.argmax(I, axis=1)
+        logits_pos = jnp.sum(logits * I) / jnp.sum(I)
+        logits_neg = jnp.sum(logits * (1 - I)) / jnp.sum(1 - I)
+
+        return critic_loss_2, (logsumexp, I, correct, logits_pos, logits_neg,critic_loss_2)
+
+    (loss, (logsumexp, I, correct, logits_pos, logits_neg, critic_loss_2)), grad = jax.value_and_grad(
+        critic_loss, has_aux=True
+    )(training_state.critic_state.params, transitions, key)
+    new_critic_state = training_state.critic_state.apply_gradients(grads=grad)
+    training_state = training_state.replace(critic_state=new_critic_state)
+
+    metrics = {
+        "critic_loss_2": critic_loss_2,
     }
 
     return training_state, metrics

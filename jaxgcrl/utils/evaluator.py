@@ -131,8 +131,8 @@ class ActorEvaluator:
                         "reward",
                         "success",
                         "success_easy",
-                        "dist",
-                        "distance_from_origin",
+                        #"dist",
+                        #"distance_from_origin",
                     ]
                 }
             )
