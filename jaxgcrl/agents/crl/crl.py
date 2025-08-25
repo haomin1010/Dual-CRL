@@ -258,7 +258,7 @@ class CRL:
 
         # Critic
         sa_encoder = Encoder(
-            repr_dim=self.repr_dim,
+            repr_dim=self.repr_dim + 32,
             network_width=self.h_dim,
             network_depth=self.n_hidden,
             skip_connections=self.skip_connections,
@@ -268,7 +268,7 @@ class CRL:
         sa_encoder_params = sa_encoder.init(sa_key, np.ones([1, state_size + action_size]))
 
         s_encoder = Encoder(
-            repr_dim=self.repr_dim,
+            repr_dim=self.repr_dim + 32,
             network_width=self.h_dim,
             network_depth=self.n_hidden,
             skip_connections=self.skip_connections,
@@ -285,7 +285,7 @@ class CRL:
             use_relu=self.use_relu,
             use_ln=self.use_ln,
         )
-        mlp_encoder_params = mlp_encoder.init(sa_key, np.ones([1, self.repr_dim]))
+        mlp_encoder_params = mlp_encoder.init(sa_key, np.ones([1, self.repr_dim + 32]))
 
         g_encoder = Encoder(
             repr_dim=self.repr_dim,

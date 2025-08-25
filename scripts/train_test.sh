@@ -10,16 +10,48 @@ export LD_LIBRARY_PATH=""
 #│ 'simple_hardest_maze'
 
 #ant ant_ball humanoid pusher_easy arm_reach arm_grasp arm_binpick_easy ant_u_maze simple_big_maze humanoid_u_maze
-for env in ant_ball arm_reach ; do
+for env in ant cheetah humanoid ant_ball ant_u_maze ant_big_maze ant_hardest_maze pusher_easy pusher_hard arm_push_easy arm_push_hard arm_grasp arm_binpick_easy arm_binpick_hard; do
   for seed in 1 2 3 4 5 ; do
-    for fn in norm ; do
+    for fn in norm l2 ; do
       JAX_TRACEBACK_FILTERING=off XLA_PYTHON_CLIENT_MEM_FRACTION=.95 MUJOCO_GL=egl python ../run.py crl \
-        --wandb_project_name dcrl-2 --wandb_group ${env} --exp_name ${env}-${fn}-${seed} --log_wandb --total_env_steps 10000000 \
+        --wandb_project_name dcrl-master --wandb_group ${env} --exp_name ${env}-${fn}-${seed} --log_wandb --total_env_steps 10000000 \
         --seed ${seed} \
         --env ${env} \
         --energy_fn ${fn}
     done
   done
 done
+
+for env in pusher_easy pusher_hard arm_push_easy arm_push_hard arm_grasp arm_binpick_easy arm_binpick_hard; do
+  for seed in 1 2 3 4 5 ; do
+    for fn in dot ; do
+      JAX_TRACEBACK_FILTERING=off XLA_PYTHON_CLIENT_MEM_FRACTION=.95 MUJOCO_GL=egl python ../run.py crl \
+        --wandb_project_name dcrl-master --wandb_group ${env} --exp_name ${env}-${fn}-${seed} --log_wandb --total_env_steps 10000000 \
+        --seed ${seed} \
+        --env ${env} \
+        --energy_fn ${fn}
+    done
+  done
+done
+
+
+for env in ant cheetah humanoid ant_ball ant_u_maze ant_big_maze ant_hardest_maze pusher_easy pusher_hard arm_push_easy arm_push_hard arm_grasp arm_binpick_easy arm_binpick_hard; do
+  for seed in 1 2 3 4 5 ; do
+    JAX_TRACEBACK_FILTERING=off XLA_PYTHON_CLIENT_MEM_FRACTION=.95 MUJOCO_GL=egl python ../run.py sac \
+      --wandb_project_name dcrl-master --wandb_group ${env} --exp_name ${env}-${fn}-${seed} --log_wandb --total_env_steps 10000000 \
+      --seed ${seed} \
+      --env ${env}
+  done
+done
+
+for env in ant cheetah humanoid ant_ball ant_u_maze ant_big_maze ant_hardest_maze pusher_easy pusher_hard arm_push_easy arm_push_hard arm_grasp arm_binpick_easy arm_binpick_hard; do
+  for seed in 1 2 3 4 5 ; do
+    JAX_TRACEBACK_FILTERING=off XLA_PYTHON_CLIENT_MEM_FRACTION=.95 MUJOCO_GL=egl python ../run.py sac --use_her \
+      --wandb_project_name dcrl-master --wandb_group ${env} --exp_name ${env}-${fn}-${seed} --log_wandb --total_env_steps 10000000 \
+      --seed ${seed} \
+      --env ${env}
+  done
+done
+
 
 echo "All runs have finished."
