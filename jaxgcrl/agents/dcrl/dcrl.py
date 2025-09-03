@@ -21,7 +21,7 @@ from jaxgcrl.envs.wrappers import TrajectoryIdWrapper
 from jaxgcrl.utils.evaluator import ActorEvaluator
 from jaxgcrl.utils.replay_buffer import TrajectoryUniformSamplingQueue
 
-from .losses import update_actor_and_alpha, update_critic
+from .losses import update_actor_and_alpha, update_critic, update_critic_2
 from .networks import Actor, Encoder
 
 Metrics = types.Metrics
@@ -155,12 +155,16 @@ class CRL:
 
     # phi(s,a) and psi(g) repr dimension
     repr_dim: int = 64
+    add_repr_dim: int = 32
 
     # layer norm
     use_ln: bool = False
 
     contrastive_loss_fn: Literal["fwd_infonce", "sym_infonce", "bwd_infonce", "binary_nce"] = "fwd_infonce"
     energy_fn: Literal["norm", "l2", "dot", "cosine"] = "norm"
+
+    # checkpoint restoration
+    restore_checkpoint_path: Optional[str] = None
 
     def check_config(self, config):
         """
@@ -173,14 +177,14 @@ class CRL:
         )
 
     def train_fn(
-        self,
-        config: "RunConfig",
-        train_env: Union[envs_v1.Env, envs.Env],
-        eval_env: Optional[Union[envs_v1.Env, envs.Env]] = None,
-        randomization_fn: Optional[
-            Callable[[base.System, jnp.ndarray], Tuple[base.System, base.System]]
-        ] = None,
-        progress_fn: Callable[[int, Metrics], None] = lambda *args: None,
+            self,
+            config: "RunConfig",
+            train_env: Union[envs_v1.Env, envs.Env],
+            eval_env: Optional[Union[envs_v1.Env, envs.Env]] = None,
+            randomization_fn: Optional[
+                Callable[[base.System, jnp.ndarray], Tuple[base.System, base.System]]
+            ] = None,
+            progress_fn: Callable[[int, Metrics], None] = lambda *args: None,
     ):
         self.check_config(config)
 
@@ -203,7 +207,7 @@ class CRL:
         num_prefill_env_steps = self.min_replay_size * config.num_envs
         num_prefill_actor_steps = np.ceil(self.min_replay_size / self.unroll_length)
         num_training_steps_per_epoch = (config.total_env_steps - num_prefill_env_steps) // (
-            config.num_evals * env_steps_per_actor_step
+                config.num_evals * env_steps_per_actor_step
         )
 
         assert num_training_steps_per_epoch > 0, (
@@ -258,7 +262,7 @@ class CRL:
 
         # Critic
         sa_encoder = Encoder(
-            repr_dim=self.repr_dim,
+            repr_dim=self.repr_dim + self.add_repr_dim,
             network_width=self.h_dim,
             network_depth=self.n_hidden,
             skip_connections=self.skip_connections,
@@ -266,6 +270,27 @@ class CRL:
             use_ln=self.use_ln,
         )
         sa_encoder_params = sa_encoder.init(sa_key, np.ones([1, state_size + action_size]))
+
+        s_encoder = Encoder(
+            repr_dim=self.repr_dim + self.add_repr_dim,
+            network_width=self.h_dim,
+            network_depth=self.n_hidden,
+            skip_connections=self.skip_connections,
+            use_relu=self.use_relu,
+            use_ln=self.use_ln,
+        )
+        s_encoder_params = s_encoder.init(sa_key, np.ones([1, state_size]))
+
+        mlp_encoder = Encoder(
+            repr_dim=self.repr_dim,
+            network_width=self.h_dim,
+            network_depth=self.n_hidden,
+            skip_connections=self.skip_connections,
+            use_relu=self.use_relu,
+            use_ln=self.use_ln,
+        )
+        mlp_encoder_params = mlp_encoder.init(sa_key, np.ones([1, self.repr_dim + self.add_repr_dim]))
+
         g_encoder = Encoder(
             repr_dim=self.repr_dim,
             network_width=self.h_dim,
@@ -277,7 +302,8 @@ class CRL:
         g_encoder_params = g_encoder.init(g_key, np.ones([1, goal_size]))
         critic_state = TrainState.create(
             apply_fn=None,
-            params={"sa_encoder": sa_encoder_params, "g_encoder": g_encoder_params},
+            params={"sa_encoder": sa_encoder_params, "g_encoder": g_encoder_params, "s_encoder": s_encoder_params,
+                    "mlp_encoder": mlp_encoder_params},
             tx=optax.adam(learning_rate=self.critic_lr),
         )
 
@@ -298,6 +324,39 @@ class CRL:
             critic_state=critic_state,
             alpha_state=alpha_state,
         )
+
+
+        # Load checkpoint if specified
+
+        if self.restore_checkpoint_path is not None:
+            if epath.Path(self.restore_checkpoint_path).exists():
+                logging.info(
+                    "Restoring CRL training state from checkpoint: %s",
+                    self.restore_checkpoint_path,
+                )
+                try:
+                    alpha_params, actor_params, critic_params = load_params(self.restore_checkpoint_path)
+
+                    # # Update training state with loaded parameters
+                    training_state = training_state.replace(
+                        alpha_state=training_state.alpha_state.replace(params=alpha_params),
+                        actor_state=training_state.actor_state.replace(params=actor_params),
+                        critic_state=training_state.critic_state.replace(params=critic_params),
+                    )
+                    # sa_encoder_params = critic_params["sa_encoder"]
+                    # s_encoder_params = critic_params["s_encoder"]
+                    logging.info("Successfully loaded checkpoint parameters")
+                except Exception as e:
+                    logging.warning(
+                        "Failed to load checkpoint from %s: %s. Starting training from scratch.",
+                        self.restore_checkpoint_path,
+                        str(e),
+                    )
+            else:
+                logging.warning(
+                    "Checkpoint file not found: %s. Starting training from scratch.",
+                    self.restore_checkpoint_path,
+                )
 
         # Replay Buffer
         dummy_obs = jnp.zeros((obs_size,))
@@ -353,6 +412,7 @@ class CRL:
             actions = nn.tanh(means + stds * jax.random.normal(key, shape=means.shape, dtype=means.dtype))
 
             nstate = env.step(env_state, actions)
+
             state_extras = {x: nstate.info[x] for x in extra_fields}
 
             return nstate, Transition(
@@ -427,6 +487,8 @@ class CRL:
                 actor=actor,
                 sa_encoder=sa_encoder,
                 g_encoder=g_encoder,
+                s_encoder=s_encoder,
+                mlp_encoder=mlp_encoder,
             )
 
             training_state, actor_metrics = update_actor_and_alpha(
@@ -435,11 +497,16 @@ class CRL:
             training_state, critic_metrics = update_critic(
                 context, networks, transitions, training_state, critic_key
             )
+
+            training_state, critic_metrics_1 = update_critic_2(
+                context, networks, transitions, training_state, critic_key
+            )
             training_state = training_state.replace(gradient_steps=training_state.gradient_steps + 1)
 
             metrics = {}
             metrics.update(actor_metrics)
             metrics.update(critic_metrics)
+            metrics.update(critic_metrics_1)
 
             return (
                 training_state,
@@ -501,10 +568,10 @@ class CRL:
 
         @jax.jit
         def training_epoch(
-            training_state,
-            env_state,
-            buffer_state,
-            key,
+                training_state,
+                env_state,
+                buffer_state,
+                key,
         ):
             @jax.jit
             def f(carry, unused_t):
@@ -561,7 +628,6 @@ class CRL:
 
             epoch_training_time = time.time() - t
             training_walltime += epoch_training_time
-
             sps = (env_steps_per_actor_step * num_training_steps_per_epoch) / epoch_training_time
             metrics = {
                 "training/sps": sps,
@@ -574,7 +640,7 @@ class CRL:
             metrics = evaluator.run_evaluation(training_state, metrics)
             logging.info("step: %d", current_step)
 
-            #do_render = ne % config.visualization_interval == 0
+            # do_render = ne % config.visualization_interval == 0
             do_render = False
 
             make_policy = lambda param: lambda obs, rng: actor.apply(param, obs)
