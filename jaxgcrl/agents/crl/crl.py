@@ -1,5 +1,6 @@
 import functools
 import logging
+import os
 import pickle
 import random
 import time
@@ -589,13 +590,15 @@ class CRL:
             )
 
             if config.checkpoint_logdir:
+                cdir = os.path.join(config.checkpoint_logdir, config.env, time.strftime("%Y%m%d_%H%M%S", time.localtime()))
+                os.makedirs(cdir, exist_ok=True)
                 # Save current policy and critic params.
                 params = (
                     training_state.alpha_state.params,
                     training_state.actor_state.params,
                     training_state.critic_state.params,
                 )
-                path = f"{config.checkpoint_logdir}/step_{int(training_state.env_steps)}.pkl"
+                path = f"{cdir}/step_{int(training_state.env_steps)}.pkl"
                 save_params(path, params)
 
         total_steps = current_step

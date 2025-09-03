@@ -120,7 +120,7 @@ def update_critic(config, networks, transitions, training_state, key):
         return critic_loss_1
 
     loss, grad = jax.value_and_grad(
-        critic_loss, has_aux=True
+        critic_loss
     )(training_state.critic_state.params, transitions, key)
     new_critic_state = training_state.critic_state.apply_gradients(grads=grad)
     training_state = training_state.replace(critic_state=new_critic_state)
@@ -164,7 +164,7 @@ def update_critic_2(config, networks, transitions, training_state, key):
         return critic_loss_2
 
     loss, grad = jax.value_and_grad(
-        critic_loss, has_aux=True
+        critic_loss
     )(training_state.critic_state.params, transitions, key)
     new_critic_state = training_state.critic_state.apply_gradients(grads=grad)
     training_state = training_state.replace(critic_state=new_critic_state)
