@@ -150,7 +150,7 @@ def update_critic_2(config, networks, transitions, training_state, key):
             g_encoder_params, transitions.observation[:, config["state_size"] :]
         )
         s_repr_2 = networks["sa_encoder"].apply(sa_encoder_params, jnp.concatenate([state, action], axis=-1))
-        #s_repr_2 = jax.lax.stop_gradient(s_repr_2)
+        s_repr_2 = jax.lax.stop_gradient(s_repr_2)
         s_repr_2_mlp = networks["mlp_encoder"].apply(mlp_encoder_params, s_repr_2)
 
         # InfoNCE
